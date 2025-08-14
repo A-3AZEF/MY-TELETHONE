@@ -2,8 +2,9 @@ import os
 import asyncio
 import importlib
 import glob
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, functions
 from telethon.sessions import StringSession
+from telethon.tl.functions.users import GetFullUserRequest
 from dotenv import load_dotenv
 
 # ========= إعدادات البيئة =========
@@ -14,8 +15,8 @@ STRING_SESSION = os.getenv("STRING_SESSION", "").strip()
 PHONE_NUMBER = os.getenv("PHONE_NUMBER", "").strip()
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 SUDO_IDS = [int(x) for x in os.getenv("SUDO_IDS", "").split(",") if x.strip().isdigit()]
-LOG_CHAT = os.getenv("LOG_CHAT")
-ALIVE_TEXT = os.getenv("ALIVE_TEXT", "I’m alive as 3AZEF!")
+LOG_CHAT = int(os.getenv("LOG_CHAT", "0")) if os.getenv("LOG_CHAT", "").isdigit() else None
+ALIVE_TEXT = os.getenv("ALIVE_TEXT", "I'm alive as 3AZEF!")
 ALIVE_PIC = os.getenv("ALIVE_PIC", "")
 
 CREDITS = "© 3AZEF — @T_8l8"
@@ -57,8 +58,8 @@ async def log(msg: str):
     if LOG_CHAT:
         try:
             await client.send_message(LOG_CHAT, msg)
-        except:
-            pass
+        except Exception as e:
+            print(f"فشل إرسال الرسالة إلى اللوج: {e}")
 
 # ========= تحميل الإضافات =========
 def load_plugins():
@@ -66,12 +67,15 @@ def load_plugins():
         mod_name = os.path.splitext(os.path.basename(path))[0]
         if mod_name.startswith("_"):
             continue
-        module = importlib.import_module(f"plugins.{mod_name}")
-        if hasattr(module, "setup"):
-            module.setup(client, is_sudo, log, CREDITS)
-        print(f"[OK] Loaded plugin: {mod_name}")
+        try:
+            module = importlib.import_module(f"plugins.{mod_name}")
+            if hasattr(module, "setup"):
+                module.setup(client, is_sudo, log, CREDITS)
+            print(f"[OK] تم تحميل الإضافة: {mod_name}")
+        except Exception as e:
+            print(f"[Error] فشل تحميل {mod_name}: {e}")
 
-# ========= أوامر أساسية هنا سريعًا =========
+# ========= أوامر أساسية =========
 @client.on(events.NewMessage(pattern=r"^\.(alive|بنج|ping)$"))
 async def alive_handler(event):
     if ALIVE_PIC:
@@ -106,15 +110,23 @@ async def id_handler(event):
 async def info_handler(event):
     reply = await event.get_reply_message()
     entity = await event.client.get_entity(reply.sender_id) if reply else await event.get_sender()
-    full = await event.client(GetFullUserRequest(entity.id)) if entity else None
-
-# استيراد دالة API المطلوبة (بعد تعريف الحدث أعلاه)
-from telethon.tl.functions.users import GetFullUserRequest
+    if entity:
+        full = await event.client(GetFullUserRequest(entity.id))
+        user_info = (
+            f"**معلومات المستخدم:**\n"
+            f"**الاسم:** {entity.first_name}\n"
+            f"**ID:** `{entity.id}`\n"
+            f"**اليوزر:** @{entity.username}\n"
+            f"**بايو:** {full.about}\n"
+            f"**تاريخ الإنشاء:** {entity.date}\n"
+            f"{CREDITS}"
+        )
+        await event.reply(user_info)
 
 @client.on(events.NewMessage(pattern=r"^\.bio (.+)$"))
 async def bio_handler(event):
     if not is_sudo(event.sender_id):
-        return
+        return await event.reply("⚠️ ليس لديك صلاحية لاستخدام هذا الأمر!")
     try:
         bio = event.pattern_match.group(1).strip()
         await client(functions.account.UpdateProfileRequest(about=bio))
@@ -125,7 +137,7 @@ async def bio_handler(event):
 @client.on(events.NewMessage(pattern=r"^\.username (.+)$"))
 async def username_handler(event):
     if not is_sudo(event.sender_id):
-        return
+        return await event.reply("⚠️ ليس لديك صلاحية لاستخدام هذا الأمر!")
     uname = event.pattern_match.group(1).strip().lstrip("@")
     try:
         await client(functions.account.UpdateUsernameRequest(uname))
@@ -136,16 +148,19 @@ async def username_handler(event):
 @client.on(events.NewMessage(pattern=r"^\.del$"))
 async def del_handler(event):
     reply = await event.get_reply_message()
-    if not reply: return await event.reply("رد على الرسالة المراد حذفها.")
+    if not reply:
+        return await event.reply("رد على الرسالة المراد حذفها.")
     try:
         await reply.delete()
         await event.delete()
-    except: pass
+    except Exception as e:
+        await event.reply(f"فشل الحذف: {e}")
 
 @client.on(events.NewMessage(pattern=r"^\.edit (.+)$"))
 async def edit_handler(event):
     reply = await event.get_reply_message()
-    if not reply: return await event.reply("رد على الرسالة المراد تعديلها.")
+    if not reply:
+        return await event.reply("رد على الرسالة المراد تعديلها.")
     txt = event.pattern_match.group(1)
     try:
         await reply.edit(txt + f"\n\n{CREDITS}")
@@ -155,8 +170,11 @@ async def edit_handler(event):
 
 @client.on(events.NewMessage(pattern=r"^\.purge$"))
 async def purge_handler(event):
+    if not is_sudo(event.sender_id):
+        return await event.reply("⚠️ ليس لديك صلاحية لاستخدام هذا الأمر!")
     reply = await event.get_reply_message()
-    if not reply: return await event.reply("رد على أول رسالة تبدأ منها التنظيف.")
+    if not reply:
+        return await event.reply("رد على أول رسالة تبدأ منها التنظيف.")
     try:
         msgs = []
         async for msg in client.iter_messages(event.chat_id, min_id=reply.id, from_user='me'):
@@ -175,8 +193,9 @@ async def main():
     await ensure_signed_in()
     load_plugins()
     await log("✅ 3AZEF userbot started.")
-    print("3AZEF is running…")
+    print("3AZEF is running...")
     await client.run_until_disconnected()
 
-with client:
-    client.loop.run_until_complete(main())
+if __name__ == "__main__":
+    with client:
+        client.loop.run_until_complete(main())
